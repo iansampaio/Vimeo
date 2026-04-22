@@ -1306,6 +1306,27 @@ function wireTransportControls() {
   });
 }
 
+function wireDeselectInteractions() {
+  const host = document.getElementById("mosaic-host");
+  if (host) {
+    host.addEventListener("click", (e) => {
+      if (selectedIndex < 0 || !videoRef) return;
+      if (e.target.closest(".mosaic-cell-hit")) return;
+      deselectTile().catch(() => {});
+    });
+  }
+
+  document.body.addEventListener("click", (e) => {
+    if (selectedIndex < 0 || !videoRef) return;
+    if (e.target.closest("#mosaic-host")) return;
+    if (e.target.closest(".chrome")) return;
+    if (e.target.closest("#help-dialog")) return;
+    if (e.target.closest("#help-open")) return;
+    if (e.target.closest("#show-ui-float")) return;
+    deselectTile().catch(() => {});
+  });
+}
+
 async function loadVideoFromInput() {
   const url = document.getElementById("video-url").value.trim();
   const ref = parseVideoRef(url);
@@ -1434,6 +1455,7 @@ function init() {
 
   wireHelpDialog();
   wireTransportControls();
+  wireDeselectInteractions();
   setGridBackgroundInputs(getGridBackground());
 
   document.addEventListener("keydown", (e) => {
@@ -1443,6 +1465,14 @@ function init() {
         e.preventDefault();
         helpDialog.close();
       }
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (document.activeElement && typeof document.activeElement.blur === "function") {
+        document.activeElement.blur();
+      }
+      deselectTile().catch(() => {});
       return;
     }
     if (e.target.matches("input, textarea, select")) return;
@@ -1456,10 +1486,6 @@ function init() {
     if (e.key === "h" || e.key === "H") {
       e.preventDefault();
       toggleUiHidden();
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      deselectTile().catch(() => {});
     }
     if (e.key === " ") {
       if (selectedIndex < 0) return;
