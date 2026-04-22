@@ -39,6 +39,142 @@ let blockTileSelectClickUntil = 0;
 /** After `applyTileOrderFromDom`, skip one DOM snapshot so API races do not overwrite correct `tiles`. */
 let skipNextDomSnapshot = false;
 
+function parseTimeToSeconds(input) {
+  if (input == null) return NaN;
+  const raw = String(input).trim();
+  if (!raw) return NaN;
+  if (/^\d+(\.\d+)?$/.test(raw)) return parseFloat(raw);
+  const mmss = raw.match(/^(\d+):(\d{1,2})(?:\.(\d+))?$/);
+  if (mmss) {
+    const min = parseInt(mmss[1], 10);
+    const sec = parseInt(mmss[2], 10);
+    const frac = mmss[3] ? parseFloat(`0.${mmss[3]}`) : 0;
+    return min * 60 + sec + frac;
+  }
+  const hhmmss = raw.match(/^(\d+):(\d{1,2}):(\d{1,2})(?:\.(\d+))?$/);
+  if (hhmmss) {
+    const h = parseInt(hhmmss[1], 10);
+    const min = parseInt(hhmmss[2], 10);
+    const sec = parseInt(hhmmss[3], 10);
+    const frac = hhmmss[4] ? parseFloat(`0.${hhmmss[4]}`) : 0;
+    return h * 3600 + min * 60 + sec + frac;
+  }
+  return NaN;
+}
+
+function clampInt(value, min, max, fallback) {
+  const n = parseInt(String(value), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function parseAspectParam(raw) {
+  const v = String(raw || "").trim();
+  const m = v.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const w = clampRatioPart(m[1], DEFAULT_TILE_RATIO.w);
+  const h = clampRatioPart(m[2], DEFAULT_TILE_RATIO.h);
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+  return { w, h };
+}
+
+function parseTimeListParam(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  const parsed = value
+    .split(",")
+    .map((token) => parseTimeToSeconds(token))
+    .filter((sec) => Number.isFinite(sec))
+    .map((sec) => Math.max(0, sec));
+  return parsed.length ? parsed : null;
+}
+
+function expandTimesForTileCount(sourceTimes, count, fallback = 0) {
+  if (!Array.isArray(sourceTimes) || sourceTimes.length === 0 || count <= 0) return null;
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    if (i < sourceTimes.length) {
+      out.push(sourceTimes[i]);
+      continue;
+    }
+    out.push(out.length ? out[out.length - 1] : fallback);
+  }
+  return out;
+}
+
+function buildVideoUrlFromSourceAndId(source, videoId) {
+  const provider = String(source || "").trim().toLowerCase();
+  const id = String(videoId || "").trim();
+  if (!id) return "";
+  if (provider === "vimeo") return `https://vimeo.com/${id}`;
+  if (provider === "youtube") return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+  return "";
+}
+
+function parseQueryState() {
+  const qs = new URLSearchParams(window.location.search);
+  const sourceRaw = (qs.get("source") || "").trim().toLowerCase();
+  const videoIdRaw = (qs.get("videoId") || "").trim();
+  const state = {};
+
+  if ((sourceRaw === "vimeo" || sourceRaw === "youtube") && videoIdRaw) {
+    const builtUrl = buildVideoUrlFromSourceAndId(sourceRaw, videoIdRaw);
+    if (builtUrl) state.videoUrl = builtUrl;
+  }
+
+  if (qs.has("rows")) {
+    state.rows = clampInt(qs.get("rows"), 1, MAX_GRID_ROWS, 2);
+  }
+  if (qs.has("cols")) {
+    state.cols = clampInt(qs.get("cols"), 1, MAX_GRID_COLS, 3);
+  }
+
+  const ratio = parseAspectParam(qs.get("aspect"));
+  if (ratio) {
+    state.ratioWidth = ratio.w;
+    state.ratioHeight = ratio.h;
+  }
+
+  if (qs.has("gap")) {
+    state.gridGap = clampInt(qs.get("gap"), 0, 64, 6);
+  }
+
+  const normalizedBg = normalizeHexColor(qs.get("background"));
+  if (normalizedBg) {
+    state.gridBg = normalizedBg;
+  }
+
+  const times = parseTimeListParam(qs.get("time"));
+  if (times) {
+    state.tiles = times;
+  }
+
+  return state;
+}
+
+function syncUrlFromState() {
+  const params = new URLSearchParams();
+  if (videoRef?.provider && videoRef?.id) {
+    params.set("source", videoRef.provider);
+    params.set("videoId", videoRef.id);
+  }
+  params.set("rows", String(getGridRows()));
+  params.set("cols", String(getGridCols()));
+  const ratio = getTileRatio();
+  params.set("aspect", `${ratio.w}:${ratio.h}`);
+  params.set("gap", String(getGridGapPx()));
+  params.set("background", getGridBackground());
+  if (tiles.length) {
+    const serializedTimes = tiles
+      .map((x) => (Number.isFinite(x.t) ? String(Math.max(0, Number(x.t.toFixed(3)))) : "0"))
+      .join(",");
+    params.set("time", serializedTimes);
+  }
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}`;
+  window.history.replaceState(null, "", nextUrl);
+}
+
 /**
  * CDN `lib/sortable.js` sets `window.Sortable` to webpack exports: `{ default: Sortable }`,
  * not the constructor itself (see runtime: onload with `hasWindowSortable:false`).
@@ -682,6 +818,7 @@ function saveState() {
       selectedIndex,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    syncUrlFromState();
   } catch (_) {}
 }
 
@@ -1369,6 +1506,7 @@ function wireHelpDialog() {
 
 function init() {
   const saved = loadState();
+  const queryState = parseQueryState();
   if (saved) {
     if (saved.videoUrl) document.getElementById("video-url").value = saved.videoUrl;
     if (saved.cols) document.getElementById("grid-cols").value = String(saved.cols);
@@ -1398,12 +1536,32 @@ function init() {
     }
   }
 
+  if (queryState.videoUrl) document.getElementById("video-url").value = queryState.videoUrl;
+  if (queryState.cols != null) document.getElementById("grid-cols").value = String(queryState.cols);
+  if (queryState.rows != null) document.getElementById("grid-rows").value = String(queryState.rows);
+  if (queryState.gridGap != null) document.getElementById("grid-gap").value = String(queryState.gridGap);
+  if (queryState.gridBg) setGridBackgroundInputs(queryState.gridBg);
+  if (queryState.ratioWidth != null || queryState.ratioHeight != null) {
+    setTileRatioInputs(queryState.ratioWidth, queryState.ratioHeight);
+  }
+
   videoRef = parseVideoRef(document.getElementById("video-url").value.trim());
   committedGridCols = getGridCols();
   committedGridRows = getGridRows();
 
   if (videoRef) {
     mutateTilesToMatchGridDimensions(getGridRows(), getGridCols());
+  }
+
+  if (Array.isArray(queryState.tiles) && queryState.tiles.length > 0) {
+    const targetCount = Math.max(1, getGridRows() * getGridCols());
+    const expanded = expandTimesForTileCount(queryState.tiles, targetCount, 0);
+    if (expanded) {
+      tiles = expanded.map((t) => ({ t: Number(t) || 0 }));
+      if (selectedIndex >= tiles.length) {
+        selectedIndex = -1;
+      }
+    }
   }
 
   document.getElementById("load-video").addEventListener("click", () => {
@@ -1513,6 +1671,7 @@ function init() {
   }
 
   updateTransportPanelVisibility();
+  syncUrlFromState();
 }
 
 document.addEventListener("DOMContentLoaded", init);
