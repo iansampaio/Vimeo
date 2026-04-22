@@ -424,7 +424,7 @@ kbd {
 
 .gap-field-wrap .input-gap {
   padding-right: 28px;
-  width: 64px;
+  width: 52px;
 }
 
 .gap-suffix {
@@ -465,12 +465,12 @@ kbd {
 }
 
 .input-with-icon--color input[type="color"] {
-  width: 28px;
-  height: 26px;
-  min-height: 26px;
+  width: 18px;
+  height: 18px;
+  min-height: 22px;
   padding: 0;
   border: 0;
-  border-radius: 3px;
+  border-radius: 2px;
   cursor: pointer;
 }
 
@@ -515,7 +515,7 @@ kbd {
 }
 
 .grid-dims-combo .grid-dim-input {
-  width: 44px;
+  width: 24px;
   border: 0;
   background: transparent;
   text-align: center;
@@ -859,3 +859,15 @@ body.ui-hidden .help-fab {
   display: block;
 }
 
+/* Hide native spinners on number fields across browsers */
+input[type="number"] {
+  appearance: textfield;
+  -webkit-appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

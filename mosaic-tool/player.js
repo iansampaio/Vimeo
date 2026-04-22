@@ -1235,6 +1235,7 @@ function init() {
   videoRef = parseVideoRef(document.getElementById("video-url").value.trim());
   committedGridCols = getGridCols();
   committedGridRows = getGridRows();
+
   if (videoRef) {
     mutateTilesToMatchGridDimensions(getGridRows(), getGridCols());
   }
