@@ -223,7 +223,7 @@ button:disabled {
 
 .mosaic-cell {
   position: relative;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: var(--tile-ratio-w, 16) / var(--tile-ratio-h, 9);
   background: #111;
   /* Small iframes often hide scrubber; keep a floor so controls stay usable */
   min-height: 168px;
@@ -525,6 +525,46 @@ kbd {
 .grid-dims-combo .grid-dims-x {
   color: var(--muted);
   opacity: 0.45;
+  font-size: 13px;
+  user-select: none;
+  line-height: 1;
+}
+
+.ratio-dims-combo {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.ratio-dims-combo.input-with-icon {
+  position: relative;
+  padding-left: 30px;
+}
+
+.ratio-dims-combo.input-with-icon .input-icon {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  margin: 0;
+}
+
+.ratio-dims-combo .ratio-dim-input {
+  width: 24px;
+  border: 0;
+  background: transparent;
+  text-align: center;
+  padding: 4px 2px;
+}
+
+.ratio-dims-combo .ratio-dims-colon {
+  color: var(--muted);
+  opacity: 0.6;
   font-size: 13px;
   user-select: none;
   line-height: 1;

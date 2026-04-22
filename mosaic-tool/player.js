@@ -20,6 +20,16 @@ let committedGridCols = 3;
 let committedGridRows = 2;
 const MAX_GRID_COLS = 12;
 const MAX_GRID_ROWS = 12;
+const DEFAULT_TILE_RATIO = { w: 16, h: 9 };
+const COMMON_TILE_RATIOS = [
+  { w: 1, h: 1 },
+  { w: 4, h: 3 },
+  { w: 3, h: 2 },
+  { w: 16, h: 10 },
+  { w: 16, h: 9 },
+  { w: 21, h: 9 },
+  { w: 9, h: 16 },
+];
 let renderId = 0;
 let lastKnownDurationSec = NaN;
 
@@ -302,6 +312,106 @@ function getGridRows() {
   return Math.max(1, Math.min(MAX_GRID_ROWS, n));
 }
 
+function clampRatioPart(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0.1, Math.min(99, n));
+}
+
+function getTileRatioWidth() {
+  const el = document.getElementById("ratio-width");
+  return clampRatioPart(el?.value, DEFAULT_TILE_RATIO.w);
+}
+
+function getTileRatioHeight() {
+  const el = document.getElementById("ratio-height");
+  return clampRatioPart(el?.value, DEFAULT_TILE_RATIO.h);
+}
+
+function getTileRatio() {
+  return {
+    w: getTileRatioWidth(),
+    h: getTileRatioHeight(),
+  };
+}
+
+function setTileRatioInputs(width, height) {
+  const w = clampRatioPart(width, DEFAULT_TILE_RATIO.w);
+  const h = clampRatioPart(height, DEFAULT_TILE_RATIO.h);
+  const widthInput = document.getElementById("ratio-width");
+  const heightInput = document.getElementById("ratio-height");
+  if (widthInput) widthInput.value = String(w);
+  if (heightInput) heightInput.value = String(h);
+}
+
+function applyMosaicTileAspectRatio(grid) {
+  if (!grid) return;
+  const ratio = getTileRatio();
+  grid.style.setProperty("--tile-ratio-w", String(ratio.w));
+  grid.style.setProperty("--tile-ratio-h", String(ratio.h));
+}
+
+function refreshMosaicTileAspectRatioOnly() {
+  applyMosaicTileAspectRatio(document.getElementById("mosaic-root"));
+  saveState();
+}
+
+function ratioDistance(a, b) {
+  return Math.abs(a - b) / Math.max(a, b);
+}
+
+function toDetectedRatio(width, height) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { ...DEFAULT_TILE_RATIO };
+  }
+  const source = width / height;
+  let best = COMMON_TILE_RATIOS[0];
+  let bestDistance = ratioDistance(source, best.w / best.h);
+  for (let i = 1; i < COMMON_TILE_RATIOS.length; i++) {
+    const candidate = COMMON_TILE_RATIOS[i];
+    const dist = ratioDistance(source, candidate.w / candidate.h);
+    if (dist < bestDistance) {
+      best = candidate;
+      bestDistance = dist;
+    }
+  }
+  return { w: best.w, h: best.h };
+}
+
+async function detectSourceAspectRatio(ref) {
+  if (!ref) return { ...DEFAULT_TILE_RATIO };
+  if (ref.provider !== "vimeo") {
+    return { ...DEFAULT_TILE_RATIO };
+  }
+  let probe = null;
+  let player = null;
+  try {
+    await loadVimeoAPI();
+    probe = document.createElement("iframe");
+    probe.src = embedSrc(ref, 0);
+    probe.setAttribute("allow", "autoplay; fullscreen; picture-in-picture");
+    probe.style.position = "fixed";
+    probe.style.left = "-9999px";
+    probe.style.top = "-9999px";
+    probe.style.width = "1px";
+    probe.style.height = "1px";
+    probe.style.border = "0";
+    document.body.appendChild(probe);
+    player = new window.Vimeo.Player(probe);
+    await player.ready();
+    const width = await player.getVideoWidth();
+    const height = await player.getVideoHeight();
+    return toDetectedRatio(width, height);
+  } catch (_) {
+    return { ...DEFAULT_TILE_RATIO };
+  } finally {
+    try {
+      if (player) await player.destroy();
+    } catch (_) {}
+    probe?.remove();
+  }
+}
+
 /** Pad tiles so `tiles.length` is a multiple of `cols` (clone last tile). */
 function ensureRectangularGridWithCols(cols) {
   const c = Math.max(1, Math.min(MAX_GRID_COLS, cols));
@@ -533,10 +643,13 @@ function getTimes() {
 
 function saveState() {
   try {
+    const ratio = getTileRatio();
     const payload = {
       videoUrl: document.getElementById("video-url").value.trim(),
       rows: getGridRows(),
       cols: getGridCols(),
+      ratioWidth: ratio.w,
+      ratioHeight: ratio.h,
       gridGap: getGridGapPx(),
       gridBg: getGridBackground(),
       tiles: tiles.map((x) => x.t),
@@ -1047,6 +1160,7 @@ async function render() {
 
   host.appendChild(grid);
   applyMosaicGridVisuals(grid);
+  applyMosaicTileAspectRatio(grid);
 
   if (videoRef.provider === "vimeo") {
     await seekVimeoCells(grid, times);
@@ -1166,7 +1280,7 @@ function wireTransportControls() {
   });
 }
 
-function loadVideoFromInput() {
+async function loadVideoFromInput() {
   const url = document.getElementById("video-url").value.trim();
   const ref = parseVideoRef(url);
   if (!ref) {
@@ -1178,10 +1292,12 @@ function loadVideoFromInput() {
   selectedIndex = -1;
   committedGridCols = getGridCols();
   committedGridRows = getGridRows();
+  const detectedRatio = await detectSourceAspectRatio(ref);
+  setTileRatioInputs(detectedRatio.w, detectedRatio.h);
   const n = committedGridRows * committedGridCols;
   tiles = Array.from({ length: n }, () => ({ t: 0 }));
   saveState();
-  render().catch((e) => console.error(e));
+  await render();
 }
 
 function toggleUiHidden() {
@@ -1218,6 +1334,9 @@ function init() {
     }
     if (saved.gridGap != null) document.getElementById("grid-gap").value = String(saved.gridGap);
     if (saved.gridBg) document.getElementById("grid-bg").value = saved.gridBg;
+    if (saved.ratioWidth != null || saved.ratioHeight != null) {
+      setTileRatioInputs(saved.ratioWidth, saved.ratioHeight);
+    }
     if (Array.isArray(saved.tiles) && saved.tiles.length > 0) {
       tiles = saved.tiles.map((t) => ({ t: Number(t) || 0 }));
     }
@@ -1240,7 +1359,9 @@ function init() {
     mutateTilesToMatchGridDimensions(getGridRows(), getGridCols());
   }
 
-  document.getElementById("load-video").addEventListener("click", loadVideoFromInput);
+  document.getElementById("load-video").addEventListener("click", () => {
+    loadVideoFromInput().catch((e) => console.error(e));
+  });
 
   document.getElementById("refresh-frames").addEventListener("click", () => {
     refreshAllTilePaints().catch((e) => console.error(e));
@@ -1251,6 +1372,12 @@ function init() {
   };
   document.getElementById("grid-cols").addEventListener("change", onGridDimsChange);
   document.getElementById("grid-rows").addEventListener("change", onGridDimsChange);
+  document.getElementById("ratio-width").addEventListener("change", () => {
+    refreshMosaicTileAspectRatioOnly();
+  });
+  document.getElementById("ratio-height").addEventListener("change", () => {
+    refreshMosaicTileAspectRatioOnly();
+  });
 
   document.getElementById("grid-gap").addEventListener("input", () => {
     refreshMosaicGridVisualsOnly();
