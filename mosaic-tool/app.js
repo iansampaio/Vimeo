@@ -645,7 +645,14 @@ function init() {
     document.body.classList.remove("ui-hidden");
   });
 
-  document.getElementById("video-url").addEventListener("change", saveState);
+  const videoUrlInput = document.getElementById("video-url");
+  videoUrlInput.addEventListener("change", saveState);
+  videoUrlInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    saveState();
+    renderMosaic().catch((err) => console.error(err));
+  });
   document.getElementById("rows").addEventListener("change", saveState);
   document.getElementById("cols").addEventListener("change", saveState);
   document.getElementById("hide-mosaic-controls").addEventListener("change", () => {
