@@ -3,7 +3,7 @@
  * Grid size is rows × columns from inputs; resizing copies neighbor times (pad/trim).
  */
 
-/** Distinct from mosaic `index.html` so layouts do not overwrite each other. */
+/** Player page state persisted in the main `index.html` experience. */
 const STORAGE_KEY = "vimeo-mosaic-player-v1";
 
 const ytPlayers = new Map();

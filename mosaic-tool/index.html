@@ -4,85 +4,182 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="vimeo-grid-favicon.png" type="image/png" />
-    <title>Video mosaic (Vimeo / YouTube)</title>
+    <title>Video mosaic player</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app">
-      <h1 class="chrome">Video mosaic — internal</h1>
-
+    <div class="app player-app">
       <section class="chrome">
-        <h2>Source</h2>
-        <label>
-          Vimeo or YouTube URL
-          <textarea
-            id="video-url"
-            placeholder="https://vimeo.com/123456789 or https://www.youtube.com/watch?v=..."
-          ></textarea>
-        </label>
-        <p class="hint">
-          Vimeo private/unlisted: include the full <code>player.vimeo.com</code> URL with
-          <code>h=</code> if needed. Times are per cell below (row-major: left→right, top→bottom).
-          Each mosaic tile is a full player (not a static image); use timeline in a tile to fine-tune.
-        </p>
-      </section>
-
-      <section class="chrome">
-        <h2>Grid</h2>
-        <div class="row">
-          <label>
-            Rows
-            <input type="number" id="rows" min="1" max="12" value="2" />
-          </label>
-          <label>
-            Cols
-            <input type="number" id="cols" min="1" max="12" value="2" />
-          </label>
-          <button type="button" id="apply-grid">Apply grid</button>
-          <label style="flex-direction: row; align-items: center; gap: 8px">
-            <input type="checkbox" id="hide-mosaic-controls" />
-            Hide player chrome in tiles (off = full scrubber in each cell; on = minimal UI for screenshots)
-          </label>
+        <div class="row row-url">
+          <div class="url-field-wrap input-with-icon">
+            <span class="input-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+              </svg>
+            </span>
+            <input
+              type="text"
+              id="video-url"
+              title="Vimeo or YouTube URL"
+              placeholder="https://vimeo.com/… or https://www.youtube.com/watch?v=…"
+            />
+            <span class="duration-badge" id="duration-badge" title="Video duration">—</span>
+          </div>
+          <button type="button" id="load-video" class="primary">Load</button>
+          <button
+            type="button"
+            id="refresh-frames"
+            class="icon-btn"
+            title="Refresh frames"
+            aria-label="Refresh frames"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+              <path d="M16 16h5v5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            id="toggle-chrome"
+            class="icon-btn"
+            title="Hide controls (H)"
+            aria-label="Hide controls"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="4" height="16" rx="1" />
+              <line x1="11" y1="6" x2="20" y2="6" />
+              <line x1="11" y1="12" x2="20" y2="12" />
+              <line x1="11" y1="18" x2="20" y2="18" />
+            </svg>
+          </button>
         </div>
       </section>
 
-      <section class="chrome">
-        <h2>Moments (one per cell)</h2>
-        <table class="moments-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Cell</th>
-              <th>Time (seconds, or mm:ss, or h:mm:ss)</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="moments-tbody"></tbody>
-        </table>
-        <div class="row" style="margin-top: 12px">
-          <label>
-            Active cell for “Capture time”
-            <input type="number" id="active-cell" min="0" value="0" style="width: 80px" />
-          </label>
-          <button type="button" id="capture-time" class="primary">Capture current time → active cell</button>
-        </div>
-        <p class="hint">
-          One player per grid tile below. Use <strong>Preview</strong> on a row to set the active cell and
-          jump that tile to its time; scrub in the tile, then <strong>Capture</strong>. Press <kbd>H</kbd> to
-          hide chrome for screenshots.
-        </p>
-      </section>
+      <section class="player-stage">
+        <div class="player-stage-mosaic-region">
+          <div
+            id="global-refresh-progress"
+            class="linear-progress linear-progress--indeterminate"
+            aria-hidden="true"
+            aria-busy="false"
+          >
+            <div class="linear-progress__track">
+              <div class="linear-progress__bar"></div>
+            </div>
+          </div>
 
-      <section class="chrome">
-        <h2>Grid (preview + mosaic)</h2>
-        <button type="button" id="render-mosaic" class="primary">Render / refresh grid</button>
-        <button type="button" id="toggle-chrome">Hide all controls (screenshot mode)</button>
-        <div id="mosaic-host" class="mosaic-wrap"></div>
+          <div id="mosaic-host" class="mosaic-wrap player-mosaic-host"></div>
+        </div>
+
+        <div class="chrome chrome-transport">
+          <div class="chrome-transport-inner">
+            <div class="transport-panel transport-panel--layout" id="transport-panel-layout">
+              <div class="external-transport external-transport--layout">
+              <span class="grid-dims-combo input-with-icon" title="Columns × rows — mosaic grid size">
+                <span class="input-icon" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7" />
+                    <rect x="14" y="3" width="7" height="7" />
+                    <rect x="14" y="14" width="7" height="7" />
+                    <rect x="3" y="14" width="7" height="7" />
+                  </svg>
+                </span>
+                <input
+                  type="number"
+                  id="grid-cols"
+                  min="1"
+                  max="12"
+                  value="3"
+                  class="grid-dim-input"
+                  title="Columns"
+                  aria-label="Columns"
+                />
+                <span class="grid-dims-x" aria-hidden="true">×</span>
+                <input
+                  type="number"
+                  id="grid-rows"
+                  min="1"
+                  max="12"
+                  value="2"
+                  class="grid-dim-input"
+                  title="Rows"
+                  aria-label="Rows"
+                />
+              </span>
+
+              <span class="input-with-icon input-with-icon--block gap-field-wrap" title="Gap between tiles">
+                <span class="input-icon" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                </span>
+                <input type="number" id="grid-gap" min="0" max="64" step="1" value="6" class="input-gap" />
+                <span class="gap-suffix" aria-hidden="true">px</span>
+              </span>
+
+              <span
+                class="input-with-icon input-with-icon--block input-with-icon--color"
+                title="Grid background color"
+              >
+                <span class="input-icon" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
+                    <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
+                    <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
+                    <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
+                    <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.55 0 1-.45 1-1v-4c0-.55-.45-1-1-1H8c-1.1 0-2-.9-2-2V9c0-1.1.9-2 2-2h1c.55 0 1-.45 1-1V3.5c0-.55-.45-1-1-1C12.33 2 12.17 2 12 2z" />
+                  </svg>
+                </span>
+                <input type="color" id="grid-bg" value="#000000" aria-label="Grid fill color" />
+              </span>
+              </div>
+            </div>
+
+            <div
+              class="transport-panel transport-panel--playback transport-panel--hidden"
+              id="transport-panel-playback"
+            >
+              <div class="external-transport" id="transport">
+                <button type="button" id="play-pause" class="transport-play" disabled aria-label="Play">▶</button>
+                <input type="range" id="seek-bar" min="0" max="0" step="0.1" value="0" disabled />
+                <span class="transport-time" id="time-label">0:00</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
 
     <button type="button" class="floating-show" id="show-ui-float">Show UI</button>
 
-    <script src="app.js"></script>
+    <button type="button" id="help-open" class="icon-btn help-fab" title="Shortcuts and help" aria-label="Help">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10" />
+        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+        <line x1="12" y1="17" x2="12.01" y2="17" />
+      </svg>
+    </button>
+
+    <dialog id="help-dialog" class="help-dialog">
+      <div class="help-dialog__inner">
+        <header class="help-dialog__header">
+          <h2>Shortcuts</h2>
+          <button type="button" id="help-close" class="icon-btn help-dialog__close" aria-label="Close">×</button>
+        </header>
+        <ul class="help-dialog__list">
+          <li><kbd>H</kbd> — Hide or show the control panels (mosaic stays visible).</li>
+          <li><kbd>Esc</kbd> — Deselect the selected tile.</li>
+          <li><kbd>Space</kbd> — Play or pause the selected tile (when a tile is selected).</li>
+          <li><kbd>Delete</kbd> / <kbd>Backspace</kbd> — Remove the selected tile from the grid.</li>
+        </ul>
+        <p class="help-dialog__footer-note">More help topics can go here later.</p>
+      </div>
+    </dialog>
+
+    <script src="player.js"></script>
   </body>
 </html>
