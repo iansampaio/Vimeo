@@ -407,13 +407,20 @@ async function seekVimeoIframeToTime(iframe, rawSeconds, { loadApi = true } = {}
   if (loadApi) await loadVimeoAPI();
   const target = Math.max(0, Number.isFinite(rawSeconds) ? rawSeconds : 0);
   const player = new window.Vimeo.Player(iframe);
-  await player.ready();
-  await player.setCurrentTime(target);
-  if (target > 0.05) {
-    await waitForVimeoSeekedOrTimeout(player);
+  try {
+    await player.ready();
+    const needsSeek = target > 0.05;
+    if (needsSeek) {
+      await player.setCurrentTime(target);
+    }
+    if (needsSeek) {
+      await waitForVimeoSeekedOrTimeout(player);
+    }
+    await player.pause();
+    return player.getCurrentTime();
+  } catch (e) {
+    throw e;
   }
-  await player.pause();
-  return player.getCurrentTime();
 }
 
 async function seekVimeoCells(grid, times) {
