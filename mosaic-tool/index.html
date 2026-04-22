@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video mosaic (Vimeo / YouTube)</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <h1 class="chrome">Video mosaic — internal</h1>
+
+      <section class="chrome">
+        <h2>Source</h2>
+        <label>
+          Vimeo or YouTube URL
+          <textarea
+            id="video-url"
+            placeholder="https://vimeo.com/123456789 or https://www.youtube.com/watch?v=..."
+          ></textarea>
+        </label>
+        <p class="hint">
+          Vimeo private/unlisted: include the full <code>player.vimeo.com</code> URL with
+          <code>h=</code> if needed. Times are per cell below (row-major: left→right, top→bottom).
+          Each mosaic tile is a full player (not a static image); use timeline in a tile to fine-tune.
+        </p>
+      </section>
+
+      <section class="chrome">
+        <h2>Grid</h2>
+        <div class="row">
+          <label>
+            Rows
+            <input type="number" id="rows" min="1" max="12" value="2" />
+          </label>
+          <label>
+            Cols
+            <input type="number" id="cols" min="1" max="12" value="2" />
+          </label>
+          <button type="button" id="apply-grid">Apply grid</button>
+          <label style="flex-direction: row; align-items: center; gap: 8px">
+            <input type="checkbox" id="hide-mosaic-controls" />
+            Hide player chrome in tiles (off = full scrubber in each cell; on = minimal UI for screenshots)
+          </label>
+        </div>
+      </section>
+
+      <section class="chrome">
+        <h2>Moments (one per cell)</h2>
+        <table class="moments-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Cell</th>
+              <th>Time (seconds, or mm:ss, or h:mm:ss)</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="moments-tbody"></tbody>
+        </table>
+        <div class="row" style="margin-top: 12px">
+          <label>
+            Active cell for “Capture time”
+            <input type="number" id="active-cell" min="0" value="0" style="width: 80px" />
+          </label>
+          <button type="button" id="capture-time" class="primary">Capture current time → active cell</button>
+        </div>
+        <p class="hint">
+          One player per grid tile below. Use <strong>Preview</strong> on a row to set the active cell and
+          jump that tile to its time; scrub in the tile, then <strong>Capture</strong>. Press <kbd>H</kbd> to
+          hide chrome for screenshots.
+        </p>
+      </section>
+
+      <section class="chrome">
+        <h2>Grid (preview + mosaic)</h2>
+        <button type="button" id="render-mosaic" class="primary">Render / refresh grid</button>
+        <button type="button" id="toggle-chrome">Hide all controls (screenshot mode)</button>
+        <div id="mosaic-host" class="mosaic-wrap"></div>
+      </section>
+    </div>
+
+    <button type="button" class="floating-show" id="show-ui-float">Show UI</button>
+
+    <script src="app.js"></script>
+  </body>
+</html>
