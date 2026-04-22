@@ -412,6 +412,7 @@ kbd {
   background: transparent;
   flex: 1;
   min-width: 0;
+  max-width: 72px;
 }
 
 .input-gap {
@@ -465,13 +466,14 @@ kbd {
 }
 
 .input-with-icon--color input[type="color"] {
-  width: 18px;
-  height: 18px;
+  max-width: 18px;
+  max-height: 18px;
   min-height: 22px;
   padding: 0;
   border: 0;
   border-radius: 2px;
   cursor: pointer;
+    margin-left: 5px;
 }
 
 .duration-badge {
@@ -555,7 +557,7 @@ kbd {
 }
 
 .ratio-dims-combo .ratio-dim-input {
-  width: 24px;
+  width: 40px;
   border: 0;
   background: transparent;
   text-align: center;

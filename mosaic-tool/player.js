@@ -604,11 +604,37 @@ function getGridGapPx() {
   return Math.max(0, Math.min(64, n));
 }
 
+function normalizeHexColor(value) {
+  const raw = String(value || "").trim();
+  const withHash = raw.startsWith("#") ? raw : `#${raw}`;
+  const match = withHash.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!match) return null;
+  const hex = match[1];
+  if (hex.length === 3) {
+    return `#${hex
+      .split("")
+      .map((ch) => ch + ch)
+      .join("")
+      .toUpperCase()}`;
+  }
+  return `#${hex.toUpperCase()}`;
+}
+
+function setGridBackgroundInputs(color) {
+  const normalized = normalizeHexColor(color) || "#000000";
+  const colorEl = document.getElementById("grid-bg");
+  const hexEl = document.getElementById("grid-bg-hex");
+  if (colorEl) colorEl.value = normalized;
+  if (hexEl) hexEl.value = normalized;
+}
+
 function getGridBackground() {
-  const el = document.getElementById("grid-bg");
-  if (!el) return "#000000";
-  const v = String(el.value || "").trim();
-  return v || "#000000";
+  const colorEl = document.getElementById("grid-bg");
+  const hexEl = document.getElementById("grid-bg-hex");
+  const hexValue = normalizeHexColor(hexEl?.value);
+  if (hexValue) return hexValue;
+  const pickerValue = normalizeHexColor(colorEl?.value);
+  return pickerValue || "#000000";
 }
 
 function applyMosaicGridVisuals(grid) {
@@ -1333,7 +1359,7 @@ function init() {
       document.getElementById("grid-rows").value = String(r);
     }
     if (saved.gridGap != null) document.getElementById("grid-gap").value = String(saved.gridGap);
-    if (saved.gridBg) document.getElementById("grid-bg").value = saved.gridBg;
+    if (saved.gridBg) setGridBackgroundInputs(saved.gridBg);
     if (saved.ratioWidth != null || saved.ratioHeight != null) {
       setTileRatioInputs(saved.ratioWidth, saved.ratioHeight);
     }
@@ -1386,6 +1412,18 @@ function init() {
     saveState();
   });
   document.getElementById("grid-bg").addEventListener("input", () => {
+    setGridBackgroundInputs(document.getElementById("grid-bg").value);
+    refreshMosaicGridVisualsOnly();
+  });
+  document.getElementById("grid-bg-hex").addEventListener("input", () => {
+    const normalized = normalizeHexColor(document.getElementById("grid-bg-hex").value);
+    if (normalized) {
+      setGridBackgroundInputs(normalized);
+      refreshMosaicGridVisualsOnly();
+    }
+  });
+  document.getElementById("grid-bg-hex").addEventListener("change", () => {
+    setGridBackgroundInputs(getGridBackground());
     refreshMosaicGridVisualsOnly();
   });
 
@@ -1396,6 +1434,7 @@ function init() {
 
   wireHelpDialog();
   wireTransportControls();
+  setGridBackgroundInputs(getGridBackground());
 
   document.addEventListener("keydown", (e) => {
     const helpDialog = document.getElementById("help-dialog");
