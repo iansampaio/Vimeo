@@ -157,6 +157,35 @@ function nextFrameLayout() {
 }
 
 let ytApiPromise = null;
+let draggablePromise = null;
+let mosaicSortable = null;
+
+/** CDN bundle exposes `{ default: Sortable }` on `window.Sortable`. */
+function getShopifySortableCtor() {
+  const s = window.Sortable;
+  if (typeof s === "function") return s;
+  if (s && typeof s.default === "function") return s.default;
+  return null;
+}
+
+function loadDraggableAPI() {
+  if (getShopifySortableCtor()) {
+    return Promise.resolve();
+  }
+  if (!draggablePromise) {
+    draggablePromise = new Promise((resolve, reject) => {
+      const tag = document.createElement("script");
+      tag.src = "https://cdn.jsdelivr.net/npm/@shopify/draggable@1.0.0-beta.12/lib/sortable.js";
+      tag.onload = () => resolve();
+      tag.onerror = () => {
+        reject(new Error("Draggable API load failed"));
+      };
+      document.head.appendChild(tag);
+    });
+  }
+  return draggablePromise;
+}
+
 function loadYouTubeAPI() {
   if (window.YT && window.YT.Player) {
     return Promise.resolve();
@@ -310,52 +339,20 @@ async function seekVimeoMosaicCells(grid, times) {
     await loadVimeoAPI();
   } catch (e) {
     console.warn("Vimeo Player API failed to load", e);
-    // #region agent log
-    fetch("http://127.0.0.1:7255/ingest/f411f86c-6fd9-44dc-a24e-7549f76ec7b4", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ac416a" },
-      body: JSON.stringify({
-        sessionId: "ac416a",
-        location: "app.js:seekVimeoMosaicCells",
-        message: "loadVimeoAPI failed",
-        data: { error: String(e) },
-        timestamp: Date.now(),
-        hypothesisId: "H2",
-        runId: "pre-fix",
-      }),
-    }).catch(() => {});
-    // #endregion
     return;
   }
   const iframes = grid.querySelectorAll("iframe");
-  const results = await Promise.all(
+  await Promise.all(
     Array.from(iframes).map(async (iframe, i) => {
       const t = Number.isFinite(times[i]) ? times[i] : 0;
       const target = Math.max(0, t);
       try {
-        const actual = await seekVimeoIframeToTime(iframe, t, { loadApi: false });
-        return { i, requested: target, actual, ok: true };
+        await seekVimeoIframeToTime(iframe, t, { loadApi: false });
       } catch (err) {
         console.warn("Vimeo seek failed for cell", i, err);
-        return { i, requested: target, ok: false, error: String(err) };
       }
     })
   );
-  // #region agent log
-  fetch("http://127.0.0.1:7255/ingest/f411f86c-6fd9-44dc-a24e-7549f76ec7b4", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ac416a" },
-    body: JSON.stringify({
-      sessionId: "ac416a",
-      location: "app.js:seekVimeoMosaicCells",
-      message: "post-seek per cell",
-      data: { results },
-      timestamp: Date.now(),
-      hypothesisId: "H2",
-      runId: "pre-fix",
-    }),
-  }).catch(() => {});
-  // #endregion
 }
 
 async function mountYouTubeMosaicPlayers(grid, ref, times, hideControls, renderId) {
@@ -366,7 +363,7 @@ async function mountYouTubeMosaicPlayers(grid, ref, times, hideControls, renderI
   const rect = first?.parentElement?.getBoundingClientRect();
   const w = Math.max(200, Math.floor(rect?.width || 320));
   const h = Math.max(112, Math.floor(rect?.height || 180));
-  const results = await Promise.all(
+  await Promise.all(
     Array.from(mounts).map(
       (div) =>
         new Promise((resolve) => {
@@ -389,69 +386,17 @@ async function mountYouTubeMosaicPlayers(grid, ref, times, hideControls, renderI
                 e.target.seekTo(start, true);
                 e.target.pauseVideo();
                 ytMosaicPlayers.set(i, e.target);
-                resolve({ i, requested: start, ok: true });
+                resolve();
               },
             },
           });
         })
     )
   );
-  // #region agent log
-  fetch("http://127.0.0.1:7255/ingest/f411f86c-6fd9-44dc-a24e-7549f76ec7b4", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ac416a" },
-    body: JSON.stringify({
-      sessionId: "ac416a",
-      location: "app.js:mountYouTubeMosaicPlayers",
-      message: "YT.Player per tile ready",
-      data: { results, renderId },
-      timestamp: Date.now(),
-      hypothesisId: "H4",
-      runId: "post-fix",
-    }),
-  }).catch(() => {});
-  // #endregion
 }
 
 async function renderMosaic() {
   const { ref, rows, cols, times, hideControls, n } = getState();
-  // #region agent log
-  const rawInputs = Array.from({ length: n }, (_, i) => {
-    const el = document.getElementById(`time-${i}`);
-    return el ? el.value : "(missing)";
-  });
-  const srcSamples = [];
-  for (let si = 0; si < Math.min(3, n); si++) {
-    srcSamples.push(
-      ref && ref.provider === "vimeo"
-        ? embedSrc(ref, times[si], { controls: !hideControls, mosaicCell: si }).slice(0, 120)
-        : ref
-          ? embedSrc(ref, times[si], { controls: !hideControls }).slice(0, 120)
-          : ""
-    );
-  }
-  fetch("http://127.0.0.1:7255/ingest/f411f86c-6fd9-44dc-a24e-7549f76ec7b4", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "ac416a" },
-    body: JSON.stringify({
-      sessionId: "ac416a",
-      location: "app.js:renderMosaic",
-      message: "getState + embed samples",
-      data: {
-        provider: ref ? ref.provider : null,
-        rows,
-        cols,
-        times,
-        rawInputs,
-        srcSamples,
-        hideControls,
-      },
-      timestamp: Date.now(),
-      hypothesisId: "H1",
-      runId: "pre-fix",
-    }),
-  }).catch(() => {});
-  // #endregion
   ytMosaicPlayers.clear();
   const host = document.getElementById("mosaic-host");
   host.innerHTML = "";
@@ -478,6 +423,13 @@ async function renderMosaic() {
   for (let i = 0; i < n; i++) {
     const cell = document.createElement("div");
     cell.className = "mosaic-cell";
+    cell.dataset.cellIndex = String(i);
+    const dragHandle = document.createElement("button");
+    dragHandle.type = "button";
+    dragHandle.className = "mosaic-cell-drag-handle";
+    dragHandle.title = "Drag tile to reorder";
+    dragHandle.textContent = "↕";
+    cell.appendChild(dragHandle);
     if (ref.provider === "youtube") {
       const mount = document.createElement("div");
       mount.id = `yt-mosaic-${renderId}-${i}`;
@@ -507,7 +459,51 @@ async function renderMosaic() {
     await mountYouTubeMosaicPlayers(grid, ref, times, hideControls, renderId);
   }
 
+  await enableMosaicReorder(grid);
   saveState();
+}
+
+function updateTileOrderAfterSort(grid) {
+  const { rows, cols, times } = getState();
+  const orderedOldIndexes = Array.from(grid.querySelectorAll(".mosaic-cell")).map((cell) =>
+    parseInt(cell.dataset.cellIndex, 10)
+  );
+  if (orderedOldIndexes.length !== times.length || orderedOldIndexes.some((i) => !Number.isFinite(i))) {
+    return;
+  }
+  const nextTimes = orderedOldIndexes.map((oldIndex) => times[oldIndex]);
+  buildMomentsTable(rows, cols, nextTimes.map(formatSeconds));
+  Array.from(grid.querySelectorAll(".mosaic-cell")).forEach((cell, i) => {
+    cell.dataset.cellIndex = String(i);
+  });
+  saveState();
+}
+
+async function enableMosaicReorder(grid) {
+  if (mosaicSortable && typeof mosaicSortable.destroy === "function") {
+    mosaicSortable.destroy();
+    mosaicSortable = null;
+  }
+  try {
+    await loadDraggableAPI();
+    const SortableCtor = getShopifySortableCtor();
+    if (!SortableCtor) {
+      throw new Error("window.Sortable missing after script load");
+    }
+    mosaicSortable = new SortableCtor([grid], {
+      draggable: ".mosaic-cell",
+      handle: ".mosaic-cell-drag-handle",
+      distance: 10,
+      mirror: {
+        constrainDimensions: true,
+      },
+    });
+    mosaicSortable.on("sortable:stop", () => {
+      updateTileOrderAfterSort(grid);
+    });
+  } catch (e) {
+    console.warn("Could not enable drag reorder", e);
+  }
 }
 
 async function previewAtCell(cellIndex) {

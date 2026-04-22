@@ -7,6 +7,8 @@
 const STORAGE_KEY = "vimeo-mosaic-player-v1";
 
 const ytPlayers = new Map();
+let draggablePromise = null;
+let playerSortable = null;
 
 let videoRef = null;
 /** @type {{ t: number }[]} */
@@ -21,6 +23,96 @@ let renderId = 0;
 let lastKnownDurationSec = NaN;
 
 let vimeoTransportCleanup = null;
+/** After a real reorder, ignore the synthetic click so selection does not jump to the wrong tile. */
+let blockTileSelectClickUntil = 0;
+/** After `applyTileOrderFromDom`, skip one DOM snapshot so API races do not overwrite correct `tiles`. */
+let skipNextDomSnapshot = false;
+
+/**
+ * CDN `lib/sortable.js` sets `window.Sortable` to webpack exports: `{ default: Sortable }`,
+ * not the constructor itself (see runtime: onload with `hasWindowSortable:false`).
+ */
+function getShopifySortableCtor() {
+  const s = window.Sortable;
+  if (typeof s === "function") return s;
+  if (s && typeof s.default === "function") return s.default;
+  return null;
+}
+
+function loadDraggableAPI() {
+  if (getShopifySortableCtor()) {
+    return Promise.resolve();
+  }
+  if (!draggablePromise) {
+    draggablePromise = new Promise((resolve, reject) => {
+      const tag = document.createElement("script");
+      tag.src = "https://cdn.jsdelivr.net/npm/@shopify/draggable@1.0.0-beta.12/lib/sortable.js";
+      tag.onload = () => resolve();
+      tag.onerror = () => {
+        reject(new Error("Draggable API load failed"));
+      };
+      document.head.appendChild(tag);
+    });
+  }
+  return draggablePromise;
+}
+
+function applyTileOrderFromDom(grid) {
+  const oldTiles = tiles.slice();
+  const oldSelected = selectedIndex;
+  const orderedOldIndexes = Array.from(grid.querySelectorAll(".mosaic-cell")).map((cell) =>
+    parseInt(cell.dataset.index, 10)
+  );
+  if (
+    orderedOldIndexes.length !== oldTiles.length ||
+    orderedOldIndexes.some((i) => !Number.isFinite(i) || i < 0 || i >= oldTiles.length)
+  ) {
+    return false;
+  }
+  tiles = orderedOldIndexes.map((i) => oldTiles[i]);
+  selectedIndex = oldSelected >= 0 ? orderedOldIndexes.indexOf(oldSelected) : -1;
+  saveState();
+  return true;
+}
+
+async function enablePlayerTileReorder(grid) {
+  if (playerSortable && typeof playerSortable.destroy === "function") {
+    playerSortable.destroy();
+    playerSortable = null;
+  }
+  try {
+    await loadDraggableAPI();
+    const SortableCtor = getShopifySortableCtor();
+    if (!SortableCtor) {
+      throw new Error("window.Sortable missing after script load");
+    }
+    playerSortable = new SortableCtor([grid], {
+      draggable: ".mosaic-cell",
+      handle: ".mosaic-cell-hit",
+      /** Require ~10px move before drag starts so taps reliably become clicks (Draggable default is 0). */
+      distance: 10,
+      mirror: { constrainDimensions: true },
+    });
+    playerSortable.on("sortable:stop", (evt) => {
+      const oldIndex = evt.oldIndex;
+      const newIndex = evt.newIndex;
+      const reordered = Number.isFinite(oldIndex) && Number.isFinite(newIndex) && oldIndex !== newIndex;
+      if (reordered) {
+        blockTileSelectClickUntil = Date.now() + 350;
+      }
+      if (!applyTileOrderFromDom(grid)) return;
+      skipNextDomSnapshot = true;
+      void (async () => {
+        await render();
+        if (reordered && videoRef) {
+          await refreshAllTilePaints();
+        }
+      })().catch((e) => console.error(e));
+    });
+  } catch (e) {
+    console.warn("Could not enable tile reorder", e);
+  }
+}
 
 function parseVimeo(input) {
   const raw = String(input || "").trim();
@@ -744,8 +836,12 @@ async function snapshotTileTimesIfDomMatches() {
       })
     );
   } else {
+    /** After Sortable reorders `.mosaic-cell` nodes, slot `i` holds the mount/player from creation index `dataset.index`, not `ytPlayers.get(i)`. */
     for (let i = 0; i < tiles.length; i++) {
-      const p = ytPlayers.get(i);
+      const cell = cells.item(i);
+      const mount = cell?.querySelector("[data-yt-mosaic]");
+      const pi = mount?.dataset?.index != null ? parseInt(mount.dataset.index, 10) : NaN;
+      const p = ytPlayers.get(Number.isFinite(pi) ? pi : i);
       if (!p || typeof p.getCurrentTime !== "function") continue;
       try {
         const cur = p.getCurrentTime();
@@ -760,8 +856,14 @@ async function render() {
   const cols = getGridCols();
 
   if (videoRef) {
-    await snapshotTileTimesIfDomMatches();
+    const doSnapshot = !skipNextDomSnapshot;
+    skipNextDomSnapshot = false;
+    if (doSnapshot) {
+      await snapshotTileTimesIfDomMatches();
+    }
     ensureRectangularGridWithCols(getGridCols());
+  } else {
+    skipNextDomSnapshot = false;
   }
 
   if (selectedIndex >= 0 && selectedIndex >= tiles.length) {
@@ -775,6 +877,12 @@ async function render() {
   clearTransportListeners();
   clearYtTimer();
   ytPlayers.clear();
+  if (playerSortable && typeof playerSortable.destroy === "function") {
+    try {
+      playerSortable.destroy();
+    } catch (_) {}
+    playerSortable = null;
+  }
   host.innerHTML = "";
 
   if (!videoRef) {
@@ -825,11 +933,6 @@ async function render() {
     const hit = document.createElement("div");
     hit.className = "mosaic-cell-hit";
     hit.title = "Select this tile";
-    hit.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      selectCell(i).catch((err) => console.error(err));
-    });
     if (selectedIndex >= 0 && i === selectedIndex) {
       hit.classList.add("mosaic-cell-hit--selected");
     }
@@ -841,6 +944,28 @@ async function render() {
 
     grid.appendChild(cell);
   }
+
+  grid.addEventListener(
+    "click",
+    (e) => {
+      if (Date.now() < blockTileSelectClickUntil) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      const hit = e.target.closest(".mosaic-cell-hit");
+      if (!hit || !grid.contains(hit)) return;
+      const cell = hit.closest(".mosaic-cell");
+      if (!cell || !grid.contains(cell)) return;
+      const cellList = grid.querySelectorAll(".mosaic-cell");
+      const idx = Array.prototype.indexOf.call(cellList, cell);
+      if (idx < 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      selectCell(idx).catch((err) => console.error(err));
+    },
+    false
+  );
 
   host.appendChild(grid);
   applyMosaicGridVisuals(grid);
@@ -855,6 +980,7 @@ async function render() {
 
   if (myId !== renderId) return;
 
+  await enablePlayerTileReorder(grid);
   await pauseAllExcept(selectedIndex >= 0 ? selectedIndex : -1);
   bindTransportToSelection();
   saveState();
