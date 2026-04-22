@@ -1,6 +1,6 @@
 /**
  * Mosaic player — one transport; rectangular grid (no empty cells).
- * Right + adds a column; bottom + adds a row (new cells copy neighbor times).
+ * Grid size is rows × columns from inputs; resizing copies neighbor times (pad/trim).
  */
 
 /** Distinct from mosaic `index.html` so layouts do not overwrite each other. */
@@ -14,9 +14,10 @@ let videoRef = null;
 /** @type {{ t: number }[]} */
 let tiles = [{ t: 0 }];
 /** >= 0 = tile index; -1 = none (clean screenshot, transport off) */
-let selectedIndex = 0;
-/** Last committed column count (for reshaping when the cols input changes). */
+let selectedIndex = -1;
+/** Last committed grid size (for reshaping when row/col inputs change). */
 let committedGridCols = 3;
+let committedGridRows = 2;
 const MAX_GRID_COLS = 12;
 const MAX_GRID_ROWS = 12;
 let renderId = 0;
@@ -295,6 +296,12 @@ function getGridCols() {
   return Math.max(1, Math.min(MAX_GRID_COLS, n));
 }
 
+function getGridRows() {
+  const raw = parseInt(document.getElementById("grid-rows").value, 10);
+  const n = Number.isFinite(raw) ? raw : 2;
+  return Math.max(1, Math.min(MAX_GRID_ROWS, n));
+}
+
 /** Pad tiles so `tiles.length` is a multiple of `cols` (clone last tile). */
 function ensureRectangularGridWithCols(cols) {
   const c = Math.max(1, Math.min(MAX_GRID_COLS, cols));
@@ -310,10 +317,46 @@ function ensureRectangularGridWithCols(cols) {
   }
 }
 
-function getGridRowCount() {
-  const c = getGridCols();
-  if (!c || tiles.length === 0) return 1;
-  return Math.ceil(tiles.length / c);
+/** Resize `tiles` in memory to match target rows/columns (uses `committedGridCols` as previous column count). */
+function mutateTilesToMatchGridDimensions(newR, newC) {
+  const oldC = committedGridCols;
+  ensureRectangularGridWithCols(oldC);
+  if (newC !== oldC) {
+    reshapeTilesForNewColumnCount(oldC, newC);
+  }
+  let curR = tiles.length / newC;
+  while (curR > newR) {
+    tiles = tiles.slice(0, (curR - 1) * newC);
+    curR--;
+  }
+  while (curR < newR) {
+    for (let c = 0; c < newC; c++) {
+      const above = tiles[(curR - 1) * newC + c];
+      tiles.push({ t: above.t });
+    }
+    curR++;
+  }
+  committedGridCols = newC;
+  committedGridRows = newR;
+  if (selectedIndex >= tiles.length) {
+    selectedIndex = Math.max(0, tiles.length - 1);
+  }
+}
+
+/** Resize stored `tiles` to match row/column inputs (snapshot live times first if `videoRef`). */
+async function applyGridSizeFromInputs() {
+  const newR = getGridRows();
+  const newC = getGridCols();
+  if (!videoRef) {
+    committedGridCols = newC;
+    committedGridRows = newR;
+    saveState();
+    return;
+  }
+  await snapshotTileTimesIfDomMatches();
+  mutateTilesToMatchGridDimensions(newR, newC);
+  saveState();
+  await render();
 }
 
 /** Reflow stored times when column count changes (row-major, pad with copies). */
@@ -344,19 +387,22 @@ async function nudgeVimeoCellsPlayPause(grid) {
   } catch {
     return;
   }
+  /** Brief play after seek helps iframes commit a decoded frame; keep ~1–2 frames at 60fps. */
+  const NUDGE_MS = 80;
   const iframes = grid.querySelectorAll(".mosaic-cell iframe");
   for (let i = 0; i < iframes.length; i++) {
     try {
       const pl = new window.Vimeo.Player(iframes[i]);
       await pl.ready();
       await pl.play();
-      await new Promise((r) => setTimeout(r, 80));
+      await new Promise((r) => setTimeout(r, NUDGE_MS));
       await pl.pause();
     } catch (_) {}
   }
 }
 
 async function nudgeYouTubeCellsPlayPause(times) {
+  const NUDGE_MS = 80;
   for (let i = 0; i < tiles.length; i++) {
     const p = ytPlayers.get(i);
     if (!p) continue;
@@ -364,10 +410,26 @@ async function nudgeYouTubeCellsPlayPause(times) {
     try {
       p.seekTo(Math.max(0, t), true);
       p.playVideo();
-      await new Promise((r) => setTimeout(r, 80));
+      await new Promise((r) => setTimeout(r, NUDGE_MS));
       p.pauseVideo();
     } catch (_) {}
   }
+}
+
+function setGlobalRefreshProgressActive(on) {
+  const el = document.getElementById("global-refresh-progress");
+  if (!el) return;
+  el.classList.toggle("is-active", !!on);
+  el.setAttribute("aria-busy", on ? "true" : "false");
+}
+
+function setTileRefreshProgressActive(grid, index) {
+  if (!grid) return;
+  grid.querySelectorAll(".mosaic-cell").forEach((cell, i) => {
+    const strip = cell.querySelector(".tile-progress");
+    if (!strip) return;
+    strip.classList.toggle("tile-progress--active", Number.isFinite(index) && i === index);
+  });
 }
 
 /** Full seek + play + pause on every tile (e.g. manual refresh after reload). */
@@ -377,79 +439,51 @@ async function refreshAllTilePaints() {
   const grid = document.getElementById("mosaic-root");
   if (!grid || grid.querySelectorAll(".mosaic-cell").length !== tiles.length) return;
   const times = getTimes();
-  if (videoRef.provider === "vimeo") {
-    try {
-      await loadVimeoAPI();
-    } catch {
-      return;
-    }
-    const iframes = grid.querySelectorAll(".mosaic-cell iframe");
-    for (let i = 0; i < iframes.length; i++) {
+  const NUDGE_MS = 80;
+  setGlobalRefreshProgressActive(true);
+  try {
+    if (videoRef.provider === "vimeo") {
       try {
-        const pl = new window.Vimeo.Player(iframes[i]);
-        await pl.ready();
+        await loadVimeoAPI();
+      } catch {
+        return;
+      }
+      const iframes = grid.querySelectorAll(".mosaic-cell iframe");
+      for (let i = 0; i < iframes.length; i++) {
+        setTileRefreshProgressActive(grid, i);
+        const iframe = iframes[i];
+        try {
+          const pl = new window.Vimeo.Player(iframe);
+          await pl.ready();
+          const t = Number.isFinite(times[i]) ? times[i] : 0;
+          await pl.setCurrentTime(t);
+          await waitForVimeoSeekedOrTimeout(pl, 600);
+          await pl.play();
+          await new Promise((r) => setTimeout(r, NUDGE_MS));
+          await pl.pause();
+        } catch (_) {}
+      }
+    } else {
+      for (let i = 0; i < tiles.length; i++) {
+        setTileRefreshProgressActive(grid, i);
+        const p = ytPlayers.get(i);
+        if (!p) continue;
         const t = Number.isFinite(times[i]) ? times[i] : 0;
-        await pl.setCurrentTime(t);
-        await waitForVimeoSeekedOrTimeout(pl, 600);
-        await pl.play();
-        await new Promise((r) => setTimeout(r, 80));
-        await pl.pause();
-      } catch (_) {}
+        try {
+          p.seekTo(Math.max(0, t), true);
+          p.playVideo();
+          await new Promise((r) => setTimeout(r, NUDGE_MS));
+          p.pauseVideo();
+        } catch (_) {}
+      }
     }
-  } else {
-    for (let i = 0; i < tiles.length; i++) {
-      const p = ytPlayers.get(i);
-      if (!p) continue;
-      const t = Number.isFinite(times[i]) ? times[i] : 0;
-      try {
-        p.seekTo(Math.max(0, t), true);
-        p.playVideo();
-        await new Promise((r) => setTimeout(r, 80));
-        p.pauseVideo();
-      } catch (_) {}
-    }
+    await pauseAllExcept(selectedIndex >= 0 ? selectedIndex : -1);
+    bindTransportToSelection();
+    saveState();
+  } finally {
+    setTileRefreshProgressActive(grid, null);
+    setGlobalRefreshProgressActive(false);
   }
-  await pauseAllExcept(selectedIndex >= 0 ? selectedIndex : -1);
-  bindTransportToSelection();
-  saveState();
-}
-
-async function addColumn() {
-  if (!videoRef) return;
-  await snapshotTileTimesIfDomMatches();
-  ensureRectangularGridWithCols(getGridCols());
-  const oldCols = getGridCols();
-  if (oldCols >= MAX_GRID_COLS) return;
-  const oldRows = tiles.length / oldCols;
-  const newCols = oldCols + 1;
-  const next = [];
-  for (let r = 0; r < oldRows; r++) {
-    for (let c = 0; c < oldCols; c++) {
-      next.push({ ...tiles[r * oldCols + c] });
-    }
-    const right = tiles[r * oldCols + oldCols - 1];
-    next.push({ t: right.t });
-  }
-  tiles = next;
-  committedGridCols = newCols;
-  document.getElementById("grid-cols").value = String(newCols);
-  saveState();
-  await render();
-}
-
-async function addRow() {
-  if (!videoRef) return;
-  await snapshotTileTimesIfDomMatches();
-  ensureRectangularGridWithCols(getGridCols());
-  const cols = getGridCols();
-  const oldRows = tiles.length / cols;
-  if (oldRows >= MAX_GRID_ROWS) return;
-  for (let c = 0; c < cols; c++) {
-    const above = tiles[(oldRows - 1) * cols + c];
-    tiles.push({ t: above.t });
-  }
-  saveState();
-  await render();
 }
 
 function getGridGapPx() {
@@ -501,6 +535,7 @@ function saveState() {
   try {
     const payload = {
       videoUrl: document.getElementById("video-url").value.trim(),
+      rows: getGridRows(),
       cols: getGridCols(),
       gridGap: getGridGapPx(),
       gridBg: getGridBackground(),
@@ -549,9 +584,36 @@ function formatClock(sec) {
   return `${m}:${pad(s)}`;
 }
 
+/** e.g. 129 → "2min 09sec" */
+function formatHumanDuration(sec) {
+  if (!Number.isFinite(sec) || sec <= 0) return "—";
+  const whole = Math.round(sec);
+  const m = Math.floor(whole / 60);
+  const s = whole % 60;
+  if (m === 0) return `${s}sec`;
+  return `${m}min ${String(s).padStart(2, "0")}sec`;
+}
+
+function setDurationBadge(seconds) {
+  const el = document.getElementById("duration-badge");
+  if (!el) return;
+  el.textContent = formatHumanDuration(seconds);
+}
+
 function setTransportEnabled(on) {
   document.getElementById("play-pause").disabled = !on;
   document.getElementById("seek-bar").disabled = !on;
+}
+
+/** Layout controls when no video or no tile selected; playback when a tile is selected. */
+function updateTransportPanelVisibility() {
+  const layout = document.getElementById("transport-panel-layout");
+  const playback = document.getElementById("transport-panel-playback");
+  if (!layout || !playback) return;
+  const showLayout = !videoRef || selectedIndex < 0;
+  const showPlayback = !!(videoRef && selectedIndex >= 0);
+  layout.classList.toggle("transport-panel--hidden", !showLayout);
+  playback.classList.toggle("transport-panel--hidden", !showPlayback);
 }
 
 function updatePlayButton(playing) {
@@ -588,8 +650,10 @@ function bindTransportToSelection() {
     setTransportEnabled(false);
     seekBar.max = "0";
     seekBar.value = "0";
-    timeLabel.textContent = "Total —";
+    timeLabel.textContent = "—";
+    setDurationBadge(NaN);
     updatePlayButton(false);
+    updateTransportPanelVisibility();
     return;
   }
 
@@ -597,8 +661,12 @@ function bindTransportToSelection() {
     setTransportEnabled(false);
     seekBar.max = "0";
     seekBar.value = "0";
-    timeLabel.textContent = Number.isFinite(lastKnownDurationSec) ? `Total ${formatClock(lastKnownDurationSec)}` : "Total —";
+    timeLabel.textContent = "—";
+    if (Number.isFinite(lastKnownDurationSec) && lastKnownDurationSec > 0) {
+      setDurationBadge(lastKnownDurationSec);
+    }
     updatePlayButton(false);
+    updateTransportPanelVisibility();
     return;
   }
 
@@ -607,6 +675,7 @@ function bindTransportToSelection() {
   const cell = cells?.length ? cells.item(selectedIndex) : null;
   if (!cell) {
     setTransportEnabled(false);
+    updateTransportPanelVisibility();
     return;
   }
 
@@ -616,10 +685,11 @@ function bindTransportToSelection() {
   const syncLabel = (cur, dur) => {
     if (Number.isFinite(dur) && dur > 0) {
       lastKnownDurationSec = dur;
-      timeLabel.textContent = `Total ${formatClock(dur)}`;
+      setDurationBadge(dur);
     } else {
-      timeLabel.textContent = "Total —";
+      setDurationBadge(lastKnownDurationSec);
     }
+    timeLabel.textContent = formatClock(Number.isFinite(cur) ? cur : 0);
     updateSelectedTileCurrentLabel(cur);
   };
 
@@ -627,6 +697,7 @@ function bindTransportToSelection() {
     const iframe = cell.querySelector("iframe");
     if (!iframe) {
       setTransportEnabled(false);
+      updateTransportPanelVisibility();
       return;
     }
     loadVimeoAPI()
@@ -662,6 +733,7 @@ function bindTransportToSelection() {
               player.off("play", onPlay);
               player.off("pause", onPause);
             };
+            updateTransportPanelVisibility();
           }
         );
       })
@@ -671,13 +743,16 @@ function bindTransportToSelection() {
         setTransportEnabled(true);
         seekBar.max = "3600";
         seekBar.value = "0";
-        timeLabel.textContent = Number.isFinite(lastKnownDurationSec) ? `Total ${formatClock(lastKnownDurationSec)}` : "Total —";
+        timeLabel.textContent = "0:00";
+        setDurationBadge(lastKnownDurationSec);
         updatePlayButton(false);
+        updateTransportPanelVisibility();
       });
   } else {
     const p = ytPlayers.get(selectedIndex);
     if (!p || !p.getDuration) {
       setTransportEnabled(false);
+      updateTransportPanelVisibility();
       return;
     }
     const dur = p.getDuration();
@@ -704,6 +779,7 @@ function bindTransportToSelection() {
     vimeoTransportCleanup = () => {
       clearYtTimer();
     };
+    updateTransportPanelVisibility();
   }
 }
 
@@ -746,7 +822,6 @@ async function selectCell(index) {
   updateSelectionUi();
   saveState();
   bindTransportToSelection();
-  syncPlusButtonsEnabled();
 }
 
 async function deselectTile() {
@@ -757,7 +832,6 @@ async function deselectTile() {
   updateSelectionUi();
   saveState();
   bindTransportToSelection();
-  syncPlusButtonsEnabled();
 }
 
 async function mountYouTubePlayers(grid, ref, times, idStamp) {
@@ -889,11 +963,10 @@ async function render() {
     host.innerHTML =
       '<p class="hint" style="margin:0;color:var(--muted)">Load a valid Vimeo or YouTube URL to begin.</p>';
     setTransportEnabled(false);
-    syncPlusButtonsEnabled();
+    setDurationBadge(NaN);
+    updateTransportPanelVisibility();
     return;
   }
-
-  syncPlusButtonsEnabled();
 
   const grid = document.createElement("div");
   grid.id = "mosaic-root";
@@ -929,6 +1002,11 @@ async function render() {
       iframe.src = embedSrc(videoRef, times[i], { mosaicCell: i });
       cell.appendChild(iframe);
     }
+
+    const tileProg = document.createElement("div");
+    tileProg.className = "tile-progress";
+    tileProg.innerHTML = '<div class="tile-progress-indeterminate"></div>';
+    cell.appendChild(tileProg);
 
     const hit = document.createElement("div");
     hit.className = "mosaic-cell-hit";
@@ -1083,10 +1161,8 @@ function wireTransportControls() {
   seekBar.addEventListener("input", () => {
     seekSelected(seekBar.value).catch((e) => console.error(e));
     const timeLabel = document.getElementById("time-label");
-    const max = parseFloat(seekBar.max);
-    if (Number.isFinite(max) && max > 0) {
-      timeLabel.textContent = `Total ${formatClock(max)}`;
-    }
+    const t = parseFloat(seekBar.value);
+    timeLabel.textContent = formatClock(Number.isFinite(t) ? t : 0);
   });
 }
 
@@ -1097,32 +1173,35 @@ function loadVideoFromInput() {
     alert("Paste a valid Vimeo or YouTube URL.");
     return;
   }
+  lastKnownDurationSec = NaN;
   videoRef = ref;
-  tiles = [{ t: 0 }];
-  selectedIndex = 0;
+  selectedIndex = -1;
   committedGridCols = getGridCols();
-  ensureRectangularGridWithCols(committedGridCols);
+  committedGridRows = getGridRows();
+  const n = committedGridRows * committedGridCols;
+  tiles = Array.from({ length: n }, () => ({ t: 0 }));
   saveState();
   render().catch((e) => console.error(e));
 }
 
-function syncPlusButtonsEnabled() {
-  const pr = document.getElementById("plus-right");
-  const pb = document.getElementById("plus-bottom");
-  if (!pr || !pb) return;
-  if (!videoRef) {
-    pr.disabled = true;
-    pb.disabled = true;
-    return;
-  }
-  const cols = getGridCols();
-  const rows = getGridRowCount();
-  pr.disabled = cols >= MAX_GRID_COLS;
-  pb.disabled = rows >= MAX_GRID_ROWS;
-}
-
 function toggleUiHidden() {
   document.body.classList.toggle("ui-hidden");
+}
+
+function wireHelpDialog() {
+  const dialog = document.getElementById("help-dialog");
+  const openBtn = document.getElementById("help-open");
+  const closeBtn = document.getElementById("help-close");
+  if (!dialog || !openBtn) return;
+  openBtn.addEventListener("click", () => {
+    if (typeof dialog.showModal === "function") {
+      dialog.showModal();
+    }
+  });
+  closeBtn?.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (e) => {
+    if (e.target === dialog) dialog.close();
+  });
 }
 
 function init() {
@@ -1130,6 +1209,13 @@ function init() {
   if (saved) {
     if (saved.videoUrl) document.getElementById("video-url").value = saved.videoUrl;
     if (saved.cols) document.getElementById("grid-cols").value = String(saved.cols);
+    if (saved.rows) {
+      document.getElementById("grid-rows").value = String(saved.rows);
+    } else if (saved.cols && Array.isArray(saved.tiles) && saved.tiles.length > 0) {
+      const c = parseInt(String(saved.cols), 10) || getGridCols();
+      const r = Math.min(MAX_GRID_ROWS, Math.max(1, Math.ceil(saved.tiles.length / c)));
+      document.getElementById("grid-rows").value = String(r);
+    }
     if (saved.gridGap != null) document.getElementById("grid-gap").value = String(saved.gridGap);
     if (saved.gridBg) document.getElementById("grid-bg").value = saved.gridBg;
     if (Array.isArray(saved.tiles) && saved.tiles.length > 0) {
@@ -1148,46 +1234,31 @@ function init() {
 
   videoRef = parseVideoRef(document.getElementById("video-url").value.trim());
   committedGridCols = getGridCols();
+  committedGridRows = getGridRows();
   if (videoRef) {
-    ensureRectangularGridWithCols(committedGridCols);
+    mutateTilesToMatchGridDimensions(getGridRows(), getGridCols());
   }
 
   document.getElementById("load-video").addEventListener("click", loadVideoFromInput);
-
-  document.getElementById("plus-right").addEventListener("click", () => {
-    addColumn().catch((e) => console.error(e));
-  });
-  document.getElementById("plus-bottom").addEventListener("click", () => {
-    addRow().catch((e) => console.error(e));
-  });
 
   document.getElementById("refresh-frames").addEventListener("click", () => {
     refreshAllTilePaints().catch((e) => console.error(e));
   });
 
-  document.getElementById("grid-cols").addEventListener("change", () => {
-    const newC = getGridCols();
-    if (!videoRef) {
-      committedGridCols = newC;
-      saveState();
-      return;
-    }
-    ensureRectangularGridWithCols(committedGridCols);
-    reshapeTilesForNewColumnCount(committedGridCols, newC);
-    committedGridCols = newC;
-    saveState();
-    render().catch((e) => console.error(e));
-  });
+  const onGridDimsChange = () => {
+    applyGridSizeFromInputs().catch((e) => console.error(e));
+  };
+  document.getElementById("grid-cols").addEventListener("change", onGridDimsChange);
+  document.getElementById("grid-rows").addEventListener("change", onGridDimsChange);
 
   document.getElementById("grid-gap").addEventListener("input", () => {
     refreshMosaicGridVisualsOnly();
   });
+  document.getElementById("grid-gap").addEventListener("change", () => {
+    saveState();
+  });
   document.getElementById("grid-bg").addEventListener("input", () => {
     refreshMosaicGridVisualsOnly();
-  });
-
-  document.getElementById("deselect-tile").addEventListener("click", () => {
-    deselectTile().catch((e) => console.error(e));
   });
 
   document.getElementById("toggle-chrome").addEventListener("click", () => toggleUiHidden());
@@ -1195,10 +1266,26 @@ function init() {
     document.body.classList.remove("ui-hidden");
   });
 
+  wireHelpDialog();
   wireTransportControls();
 
   document.addEventListener("keydown", (e) => {
+    const helpDialog = document.getElementById("help-dialog");
+    if (helpDialog?.open) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        helpDialog.close();
+      }
+      return;
+    }
     if (e.target.matches("input, textarea, select")) return;
+    if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+      e.preventDefault();
+      if (typeof helpDialog?.showModal === "function") {
+        helpDialog.showModal();
+      }
+      return;
+    }
     if (e.key === "h" || e.key === "H") {
       e.preventDefault();
       toggleUiHidden();
@@ -1223,14 +1310,16 @@ function init() {
   } else {
     document.getElementById("mosaic-host").innerHTML =
       '<p class="hint" style="margin:0;color:var(--muted)">Load a valid Vimeo or YouTube URL to begin.</p>';
-    syncPlusButtonsEnabled();
     setTransportEnabled(false);
+    setDurationBadge(NaN);
+    updateTransportPanelVisibility();
   }
 
   if (selectedIndex >= 0 && selectedIndex >= tiles.length) {
     selectedIndex = Math.max(0, tiles.length - 1);
   }
-  syncPlusButtonsEnabled();
+
+  updateTransportPanelVisibility();
 }
 
 document.addEventListener("DOMContentLoaded", init);
